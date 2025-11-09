@@ -40,20 +40,20 @@ def get_content_list_by_course_id(course_id: str) -> dict:
         headers=HEADERS,
     )
 
-    data = response.json()[0]["result"]["data"]
+    data = response.json()[0]["result"]["data"]["json"]
 
     final_data = {
-        "lessons": data["json"]["lessons"],
+        "lessons": data["lessons"],
         "course_info": {
-            "name": data["json"]["name"],
-            "slug": data["json"]["slug"],
-            "type": data["json"]["type"],
-            "courseId": data["json"]["courseId"],
-            "releasedAt": datetime.fromisoformat(data["json"]["releasedAt"]).strftime("%d %B %Y"),
-            "coursePartner": data["json"]["wpData"]["coursePartner"],
-            "courseTopic": data["json"]["wpData"]["courseTopic"],
-            "courseLevel": data["json"]["wpData"]["courseLevel"],
-            "courseThumbnail": data["json"]["wpData"]["videoThumbnail"],
+            "name": data["name"],
+            "slug": data["slug"],
+            "type": data["type"],
+            "courseId": data["courseId"],
+            "releasedAt": datetime.fromisoformat(data["releasedAt"]).strftime("%d %B %Y"),
+            "coursePartner": data["wpData"]["coursePartner"],
+            "courseTopic": data["wpData"]["courseTopic"],
+            "courseLevel": data["wpData"]["courseLevel"],
+            "courseThumbnail": data["wpData"]["videoThumbnail"],
         },
     }
 
@@ -201,30 +201,6 @@ def save_course_info_as_markdown(course_data: dict, save_file_path: Path):
         f.write("".join(md_lines))
 
 
-def extract_video_and_caption_urls(video_id: int) -> dict | None:
-    """Extract video and caption URLs from platform-api."""
-    url = f"{PLATFORM_API}/videos/{video_id}/caption.json?v=None"
-    try:
-        r = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=10)
-        if not r.ok:
-            return None
-        json_response = r.json()
-        caption_url = json_response.get("data", {}).get("subtitleUrl")
-        if not caption_url:
-            raise ValueError("Caption URL not found in response")
-
-        # "https://dyckms5inbsqq.cloudfront.net/Anthropic/C3/L6/subtitle/eng/sc-Anthropic-C3-L6.vtt"
-        # "https://dyckms5inbsqq.cloudfront.net/Anthropic/C3/L6/video/1080/sc-Anthropic-C3-L6.m3u8"
-        video_file_name = Path(caption_url).stem + ".m3u8"
-        base_url = caption_url.split("/subtitle/")[0]
-        video_url = f"{base_url}/video/1080/{video_file_name}"
-        return {"caption_url": caption_url, "video_url": video_url}
-
-    except Exception:
-        print(f"Error trying platform-api video {video_id}")
-        return None
-
-
 def save_reading_material(readingMaterialId: str, save_file_path: Path):
     params = {
         "batch": "1",
@@ -356,11 +332,10 @@ def download_video_from_m3u8(m3u8_url: str, out_dir: Path, file_stem: str, use_a
         "noprogress": False,  # don't show yt-dlp built-in progress bar
         "no_warnings": True,  # don't show yt-dlp warnings
         "logtostderr": False,  # don't show yt-dlp logs to stderr
-        # "ratelimit": None,
-        # "throttledratelimit": None,
-        # "retries": 10,
-        # "fragment_retries": 10,
-        # "nopart": True,
+        "ratelimit": None,
+        "throttledratelimit": None,
+        "retries": 10,
+        "fragment_retries": 10,
     }
     if use_aria2c:
         opts.update(
@@ -382,6 +357,29 @@ def download_video_from_m3u8(m3u8_url: str, out_dir: Path, file_stem: str, use_a
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([m3u8_url])
+
+
+def extract_video_and_caption_urls(video_id: int) -> dict:
+    params = {
+        "batch": "1",
+        "input": json.dumps({"0": {"json": {"videoId": video_id}}}),
+    }
+
+    response = requests.get(
+        "https://learn.deeplearning.ai/api/trpc/course.getLessonVideo",
+        params=params,
+        cookies=COOKIES,
+        headers=HEADERS,
+    )
+
+    if not response.ok:
+        return {}
+
+    data = response.json()[0]["result"]["data"]["json"]["video"]
+    caption_url = data["tracks"][0]["src"]
+    video_url = data["mp4Url"] if data["mp4Url"] else data["webmUrl"]
+
+    return {"caption_url": caption_url, "video_url": video_url}
 
 
 def download_course_by_id(course_slug: str, save_dir: Path):
@@ -406,10 +404,9 @@ def download_course_by_id(course_slug: str, save_dir: Path):
 
             if lesson_type == "reading_material":
                 save_reading_material(lesson_data.get("readingMaterialId"), save_dir / f"{index:02d}_{name}.md")
-            elif lesson_type == "video":
+            elif lesson_type == "video" or lesson_type == "video_notebook":
                 video_data = extract_video_and_caption_urls(lesson_data.get("videoId"))
                 if video_data:
-                    print("video_data: ", video_data)
                     save_file(video_data["caption_url"], save_dir / f"{index:02d}_{name}.vtt", is_binary=True)
                     download_video_from_m3u8(video_data["video_url"], save_dir, f"{index:02d}_{name}", use_aria2c=False)
             pbar.update(1)
