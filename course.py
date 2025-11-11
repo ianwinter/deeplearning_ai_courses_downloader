@@ -1,94 +1,22 @@
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from threading import Lock
+from typing import Any, Dict
 
 import requests
-import yt_dlp
-from pydantic import BaseModel, field_validator
 from tqdm import tqdm
 
+from downloader import YTDLDownloader
+from models import CourseData, CoursePartner
 from utils import load_secret
 
-COOKIES, HEADERS = load_secret()
 COURSES_BASE_URL = "https://learn.deeplearning.ai/courses/"
 PLATFORM_API = "https://platform-api.dlai.link"
 
-
-class CoursePartner(BaseModel):
-    """Model for course partner information."""
-
-    title: str
-    logo: Optional[str] = None
-
-
-class CourseInfo(BaseModel):
-    """Model for course metadata."""
-
-    name: str
-    slug: str
-    type: str
-    courseId: int
-    releasedAt: str
-    coursePartner: List[Union[CoursePartner, Dict[str, Any]]]
-    courseTopic: List[str]
-    courseLevel: str
-    courseThumbnail: str
-
-    @field_validator("coursePartner", mode="before")
-    @classmethod
-    def validate_course_partner(cls, v):
-        """Convert dict partners to CoursePartner objects."""
-        if isinstance(v, list):
-            result = []
-            for partner in v:
-                if isinstance(partner, dict):
-                    result.append(CoursePartner(**partner))
-                else:
-                    result.append(partner)
-            return result
-        return v
-
-
-class Lesson(BaseModel):
-    """Model for a lesson."""
-
-    index: int
-    slug: str
-    name: str
-    type: str
-    videoId: Optional[int] = None
-    time: Optional[int] = None
-    programId: Optional[Union[str, int]] = None
-    chatbotId: Optional[Union[str, int]] = None
-    iframeUrl: Optional[str] = None
-    quizId: Optional[str] = None
-    progress: Optional[int] = None
-    readingMaterialId: Optional[str] = None
-    accessControl: Optional[str] = None
-    requiredUserTier: Optional[str] = None
-    features: Optional[Dict[str, Any]] = None
-
-
-class CourseData(BaseModel):
-    """Model for complete course data."""
-
-    lessons: Dict[str, Lesson]
-    course_info: CourseInfo
-
-    @field_validator("lessons", mode="before")
-    @classmethod
-    def validate_lessons(cls, v):
-        """Convert dict lessons to Lesson objects."""
-        if isinstance(v, dict):
-            result = {}
-            for key, lesson in v.items():
-                if isinstance(lesson, dict):
-                    result[key] = Lesson(**lesson)
-                else:
-                    result[key] = lesson
-            return result
-        return v
+# Thread-safe lock for progress bar updates
+_pbar_lock = Lock()
 
 
 class Course:
@@ -186,23 +114,27 @@ class Course:
             "input": json.dumps({"0": {"json": {"courseSlug": course_slug}}}),
         }
 
+        cookies, headers = load_secret()
+
         response = requests.get(
             "https://learn.deeplearning.ai/api/trpc/course.getCourseBySlug",
             params=params,
-            cookies=COOKIES,
-            headers=HEADERS,
+            cookies=cookies,
+            headers=headers,
         )
         response.raise_for_status()
 
         data = response.json()[0]["result"]["data"]["json"]
         return data
 
-    def download(self, save_dir: Path) -> None:
+    def download(self, save_dir: Path, concurrent_downloads: int = 1) -> None:
         """
         Download the entire course including videos, captions, and reading materials.
 
         Args:
             save_dir: Directory where the course will be saved.
+            concurrent_downloads: Number of lessons to download in parallel (default: 1).
+                                 Higher values can speed up downloads but may hit rate limits.
         """
         print("Getting course content list...")
         course_info = self._data.course_info
@@ -216,39 +148,52 @@ class Course:
         save_dir.mkdir(parents=True, exist_ok=True)
         self._save_course_info_as_markdown(save_dir / "00_course_info.md")
 
-        print("Downloading course lessons...")
-        with tqdm(
-            total=len(lessons),
+        # Sort lessons by index to maintain order
+        sorted_lessons = sorted(lessons.items(), key=lambda x: x[1].index if x[1] else 0)
+
+        print(f"Downloading {len(sorted_lessons)} lessons (concurrent: {concurrent_downloads})...")
+
+        # Create progress bar
+        pbar = tqdm(
+            total=len(sorted_lessons),
             desc=f"Downloading Course: {course_info.slug}",
             leave=True,
-        ) as pbar:
-            for index, (lesson_id, lesson_data) in enumerate(lessons.items(), start=1):
-                name = lesson_data.name
-                lesson_type = lesson_data.type
+        )
 
-                if lesson_type == "reading_material" and lesson_data.readingMaterialId:
-                    self._save_reading_material(
-                        lesson_data.readingMaterialId,
-                        save_dir / f"{index:02d}_{name}.md",
-                    )
-                elif lesson_type in ("video", "video_notebook") and lesson_data.videoId:
-                    video_data = self._extract_video_and_caption_urls(lesson_data.videoId)
-                    if video_data:
-                        self._save_file(
-                            video_data["caption_url"],
-                            save_dir / f"{index:02d}_{name}.vtt",
-                            is_binary=True,
-                        )
-                        self._download_video_from_m3u8(
-                            video_data["video_url"],
-                            save_dir,
-                            f"{index:02d}_{name}",
-                            use_aria2c=False,
-                        )
-                pbar.update(1)
-                pbar.refresh()
+        # Download lessons
+        if concurrent_downloads == 1:
+            # Sequential download (original behavior)
+            for index, (lesson_id, lesson_data) in enumerate(sorted_lessons, start=1):
+                try:
+                    YTDLDownloader(lesson_data, save_dir).download_lesson_content(lesson_data)
+                except Exception as e:
+                    print(f"\nError downloading lesson {index} ({lesson_data.name}): {e}")
+                finally:
+                    pbar.update(1)
+        else:
+            # Concurrent download
+            with ThreadPoolExecutor(max_workers=concurrent_downloads) as executor:
+                # Submit all download tasks
+                future_to_lesson = {
+                    executor.submit(
+                        YTDLDownloader(lesson_data, save_dir).download_lesson_content, lesson_data
+                    ): lesson_data
+                    for _, lesson_data in sorted_lessons
+                }
 
-        print(f"\nCourse downloaded successfully to: {save_dir}")
+                # Process completed downloads
+                for future in as_completed(future_to_lesson):
+                    lesson_data = future_to_lesson[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"\nError downloading lesson {lesson_data.index} ({lesson_data.name}): {e}")
+                    finally:
+                        with _pbar_lock:
+                            pbar.update(1)
+
+        pbar.close()
+        print(f"\nCourse downloaded successfully to: '{save_dir}'")
 
     def _save_course_info_as_markdown(self, save_file_path: Path) -> None:
         """Save course information as a markdown file."""
@@ -358,142 +303,6 @@ class Course:
         # Write to file
         with open(save_file_path, "w", encoding="utf-8") as f:
             f.write("".join(md_lines))
-
-    def _save_reading_material(self, reading_material_id: str, save_file_path: Path) -> None:
-        """Download and save reading material."""
-        params = {
-            "batch": "1",
-            "input": json.dumps({"0": {"json": {"materialId": reading_material_id}}}),
-        }
-
-        response = requests.get(
-            "https://learn.deeplearning.ai/api/trpc/course.getReadingMaterial",
-            params=params,
-            cookies=COOKIES,
-            headers=HEADERS,
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        with open(save_file_path, "w", encoding="utf-8") as f:
-            f.write(data[0]["result"]["data"]["json"]["content"])
-
-    def _save_file(self, url: str, save_file_path: Path, show_progress: bool = True, is_binary: bool = True) -> None:
-        """Download a file from a URL with optional progress bar."""
-        mode = "wb" if is_binary else "w"
-
-        # Ensure parent directory exists
-        save_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            # Make streaming request
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                cookies=COOKIES,
-                stream=True,
-                timeout=30,
-                allow_redirects=True,
-            )
-            response.raise_for_status()
-
-            # Get file size from headers if available
-            total_size = int(response.headers.get("content-length", 0)) or None
-
-            if show_progress:
-                # Download with progress bar (disappears when done with leave=False)
-                with (
-                    open(save_file_path, mode) as f,
-                    tqdm(
-                        desc=save_file_path.name,
-                        total=total_size,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        leave=False,  # Progress bar disappears when done
-                    ) as pbar,
-                ):
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            pbar.update(len(chunk))
-            else:
-                # Download without progress bar, just print log line
-                print(f"Downloading {save_file_path.name}...", end=" ", flush=True)
-                with open(save_file_path, mode) as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                print("Done")
-
-        except requests.exceptions.RequestException as e:
-            print(f"Error downloading {url}: {e}")
-            raise
-        except Exception as e:
-            print(f"Unexpected error saving file {save_file_path}: {e}")
-            raise
-
-    def _download_video_from_m3u8(self, m3u8_url: str, out_dir: Path, file_stem: str, use_aria2c: bool = False) -> None:
-        """Download video from m3u8 url and save it as MP4."""
-        out_dir.mkdir(parents=True, exist_ok=True)
-        outtmpl = out_dir / f"{file_stem}.%(ext)s"
-
-        opts = {
-            "outtmpl": str(outtmpl.resolve()),
-            "quiet": True,
-            "merge_output_format": "mp4",  # merge segments into a single file
-            "noprogress": False,  # don't show yt-dlp built-in progress bar
-            "no_warnings": True,  # don't show yt-dlp warnings
-            "logtostderr": False,  # don't show yt-dlp logs to stderr
-            "ratelimit": None,
-            "throttledratelimit": None,
-            "retries": 10,
-            "fragment_retries": 10,
-        }
-
-        if use_aria2c:
-            opts.update(
-                {
-                    "external_downloader": "aria2c",
-                    "external_downloader_args": [
-                        "-x",
-                        "16",  # max connections per server
-                        "-s",
-                        "16",  # split into N segments
-                        "-j",
-                        "16",  # parallel downloads
-                        "-k",
-                        "1M",  # segment size
-                        "--summary-interval=0",
-                    ],
-                }
-            )
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([m3u8_url])
-
-    def _extract_video_and_caption_urls(self, video_id: int) -> Dict[str, str]:
-        """Extract video and caption URLs from the API."""
-        params = {
-            "batch": "1",
-            "input": json.dumps({"0": {"json": {"videoId": video_id}}}),
-        }
-
-        response = requests.get(
-            "https://learn.deeplearning.ai/api/trpc/course.getLessonVideo",
-            params=params,
-            cookies=COOKIES,
-            headers=HEADERS,
-        )
-
-        if not response.ok:
-            return {}
-
-        data = response.json()[0]["result"]["data"]["json"]["video"]
-        caption_url = data["tracks"][0]["src"]
-        video_url = data["mp4Url"] if data["mp4Url"] else data["webmUrl"]
-
-        return {"caption_url": caption_url, "video_url": video_url}
 
     @property
     def name(self) -> str:
