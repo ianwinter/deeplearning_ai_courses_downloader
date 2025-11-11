@@ -153,47 +153,48 @@ class Course:
 
         print(f"Downloading {len(sorted_lessons)} lessons (concurrent: {concurrent_downloads})...")
 
-        # Create progress bar
+        # Create progress bar at position 0 (outer bar)
         pbar = tqdm(
             total=len(sorted_lessons),
             desc=f"Downloading Course: {course_info.slug}",
             leave=True,
+            position=0,
         )
 
         # Download lessons
         if concurrent_downloads == 1:
             # Sequential download (original behavior)
             for index, (lesson_id, lesson_data) in enumerate(sorted_lessons, start=1):
-                try:
-                    YTDLDownloader(lesson_data, save_dir).download_lesson_content(lesson_data)
-                except Exception as e:
-                    print(f"\nError downloading lesson {index} ({lesson_data.name}): {e}")
-                finally:
+                success = YTDLDownloader(lesson_data, save_dir, position=1).download_lesson_content(lesson_data)
+                if not success:
+                    tqdm.write(f"Error downloading lesson {index} ({lesson_data.name})")
+                else:
                     pbar.update(1)
         else:
             # Concurrent download
             with ThreadPoolExecutor(max_workers=concurrent_downloads) as executor:
                 # Submit all download tasks
-                future_to_lesson = {
-                    executor.submit(
-                        YTDLDownloader(lesson_data, save_dir).download_lesson_content, lesson_data
-                    ): lesson_data
-                    for _, lesson_data in sorted_lessons
-                }
+                future_to_lesson = {}
+                for idx, (lesson_id, lesson_data) in enumerate(sorted_lessons):
+                    # Assign position = 1 + idx modulo max_workers to keep bars stable
+                    # This limits active bars to max_workers rows while maintaining stable positions
+                    slot = 1 + (idx % concurrent_downloads)
+                    downloader = YTDLDownloader(lesson_data, save_dir, position=slot)
+                    future = executor.submit(downloader.download_lesson_content, lesson_data)
+                    future_to_lesson[future] = lesson_data
 
                 # Process completed downloads
                 for future in as_completed(future_to_lesson):
                     lesson_data = future_to_lesson[future]
                     try:
-                        future.result()
-                    except Exception as e:
-                        print(f"\nError downloading lesson {lesson_data.index} ({lesson_data.name}): {e}")
-                    finally:
-                        with _pbar_lock:
+                        success = future.result()
+                        if success:
                             pbar.update(1)
+                    except Exception as e:
+                        tqdm.write(f"Error downloading lesson {lesson_data.index} ({lesson_data.name}): {e}")
 
         pbar.close()
-        print(f"\nCourse downloaded successfully to: '{save_dir}'")
+        tqdm.write(f"\nCourse downloaded successfully to: '{save_dir}'")
 
     def _save_course_info_as_markdown(self, save_file_path: Path) -> None:
         """Save course information as a markdown file."""

@@ -17,11 +17,13 @@ class YTDLDownloader:
         self,
         lesson_data: Lesson,
         out_dir: Path,
+        position: int = 1,  # terminal row for this bar (0 reserved for outer)
         use_aria2: bool = False,
         aria2_args: Optional[Sequence[str]] = None,
     ):
         self.out_dir = out_dir
         self.file_stem = f"{lesson_data.index:02d}_{lesson_data.name}"
+        self.position = position
         self.use_aria2 = use_aria2
         self.aria2_args = aria2_args or ["-x", "16", "-s", "16", "-j", "16", "-k", "1M", "--summary-interval=0"]
 
@@ -41,41 +43,46 @@ class YTDLDownloader:
                 # create bar for this file
                 filename = d.get("filename") or f"{self.file_stem}.mp4"
                 short_name = Path(filename).stem[:60]
+                # position param keeps separate bars on different rows
                 self._pbar = tqdm(
                     total=total,
                     unit="B",
                     unit_scale=True,
                     unit_divisor=1000,  # show MB/s not MiB/s
-                    desc=f"{short_name}",
+                    desc=short_name,
                     leave=False,
+                    # Specify the line offset to print this bar (starting from 0) Automatic if unspecified.
+                    # Useful to manage multiple bars at once (eg, from threads).
+                    # If you have a single bar, you can omit position and it will default to 0.
+                    position=self.position,
+                    dynamic_ncols=True,
                 )
 
             # update bar
             if total:
                 self._pbar.total = total
             self._pbar.n = downloaded
+
+            # refresh the bar
             self._pbar.refresh()
 
         elif status == "finished":
             # merging finished
             if self._pbar is not None:
-                # ensure it reaches total
+                # mark complete
                 if self._pbar.total and self._pbar.n < self._pbar.total:
                     self._pbar.n = self._pbar.total
-                self._pbar.refresh()
+                # close and remove bar line
                 self._pbar.close()
-                self._pbar.clear()
                 self._pbar = None
 
-            # brief confirmation
-            print(f"✅ {d.get('filename', self.file_stem)} done.")
-
+            # use tqdm.write to print the message instead of print() to avoid mixing with the progress bar
+            tqdm.write(f"✅ Downloaded: '{Path(d.get('filename', self.file_stem)).name}'")
         elif status == "error":
             if self._pbar is not None:
                 self._pbar.close()
-                self._pbar.clear()
                 self._pbar = None
-            print("❌ yt-dlp error:", d)
+            tqdm.write(f"❌ yt-dlp error: {d}")
 
     def _build_opts(self) -> dict:
         """Build options for yt-dlp."""
@@ -157,20 +164,21 @@ class YTDLDownloader:
                             f.write(chunk)
                             pbar.update(len(chunk))
             else:
-                # Download without progress bar, just print log line
-                print(f"Downloading {save_file_path.name}...", end=" ", flush=True)
+                # Download without progress bar, just log line
                 with open(save_file_path, mode) as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                print("Done")
+
+                # use tqdm.write to print the message instead of print() to avoid mixing with the progress bar
+                tqdm.write(f"✅ Downloaded: '{save_file_path.name}'")
 
         except requests.exceptions.RequestException as e:
-            print(f"Error downloading {url}: {e}")
-            raise
+            tqdm.write(f"❌ Error downloading {url}: {e}")
+            raise e
         except Exception as e:
-            print(f"Unexpected error saving file {save_file_path}: {e}")
-            raise
+            tqdm.write(f"❌ Unexpected error saving file {save_file_path}: {e}")
+            raise e
 
     def _save_reading_material(self, reading_material_id: str, save_file_path: Path) -> None:
         """Download and save reading material."""
@@ -220,7 +228,7 @@ class YTDLDownloader:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([m3u8_url])
 
-    def download_lesson_content(self, lesson_data: Lesson) -> Lesson:
+    def download_lesson_content(self, lesson_data: Lesson) -> bool:
         """
         Download a single lesson (reading material or video).
 
@@ -229,25 +237,29 @@ class YTDLDownloader:
         Args:
             lesson_data: The lesson data object
         """
-        lesson_type = lesson_data.type
+        try:
+            lesson_type = lesson_data.type
 
-        if lesson_type == "reading_material" and lesson_data.readingMaterialId:
-            self._save_reading_material(
-                lesson_data.readingMaterialId,
-                self.out_dir / f"{self.file_stem}.md",
-            )
-        elif lesson_type in ("video", "video_notebook") and lesson_data.videoId:
-            lesson_video_data = self._extract_video_and_caption_urls(lesson_data.videoId)
-            if lesson_video_data.get("caption_url"):
-                # Download caption first (smaller, faster)
-                self._save_file(
-                    lesson_video_data["caption_url"],
-                    self.out_dir / f"{self.file_stem}.vtt",
-                    is_binary=True,
-                    show_progress=False,  # Hide individual file progress in concurrent mode
+            if lesson_type == "reading_material" and lesson_data.readingMaterialId:
+                self._save_reading_material(
+                    lesson_data.readingMaterialId,
+                    self.out_dir / f"{self.file_stem}.md",
                 )
-            if lesson_video_data.get("video_url"):
-                # Then download video (larger, slower)
-                self.download_video_from_m3u8(lesson_video_data["video_url"])
+            elif lesson_type in ("video", "video_notebook") and lesson_data.videoId:
+                lesson_video_data = self._extract_video_and_caption_urls(lesson_data.videoId)
+                if lesson_video_data.get("caption_url"):
+                    # Download caption first (smaller, faster)
+                    self._save_file(
+                        lesson_video_data["caption_url"],
+                        self.out_dir / f"{self.file_stem}.vtt",
+                        is_binary=True,
+                        show_progress=False,  # Hide individual file progress in concurrent mode
+                    )
+                if lesson_video_data.get("video_url"):
+                    # Then download video (larger, slower)
+                    self.download_video_from_m3u8(lesson_video_data["video_url"])
 
-        return lesson_data
+            return True
+        except Exception as e:
+            tqdm.write(f"❌ Error downloading lesson {lesson_data.index} ({lesson_data.name}): {e}")
+            return False
