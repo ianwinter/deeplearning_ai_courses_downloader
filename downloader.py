@@ -9,7 +9,6 @@ from tqdm import tqdm
 from yt_dlp.utils import json
 
 from models import Lesson
-from utils import load_secret
 
 
 class YTDLDownloader:
@@ -17,20 +16,44 @@ class YTDLDownloader:
         self,
         lesson_data: Lesson,
         out_dir: Path,
+        session: requests.Session,
         position: int = 1,  # terminal row for this bar (0 reserved for outer)
         use_aria2: bool = False,
         aria2_args: Optional[Sequence[str]] = None,
+        api_base_url: str = "https://learn.deeplearning.ai/api/trpc",
     ):
+        """
+        Initialize YTDLDownloader.
+
+        Args:
+            lesson_data: Lesson data object
+            out_dir: Output directory for downloads
+            session: Configured requests.Session instance with cookies and headers
+            position: Terminal row position for progress bar
+            use_aria2: Whether to use aria2c for downloads
+            aria2_args: Custom aria2c arguments
+        """
         self.out_dir = out_dir
         self.file_stem = f"{lesson_data.index:02d}_{lesson_data.name}"
+        self.api_base_url = api_base_url
         self.position = position
         self.use_aria2 = use_aria2
-        self.aria2_args = aria2_args or ["-x", "16", "-s", "16", "-j", "16", "-k", "1M", "--summary-interval=0"]
+        self.aria2_args = aria2_args or [
+            "-x",
+            "16",  # max connections per server
+            "-s",
+            "16",  # split into N segments
+            "-j",
+            "16",  # parallel downloads
+            "-k",
+            "1M",  # segment size
+            "--summary-interval=0",
+        ]
 
         # progress bar kept per instance
         self._pbar: Optional[tqdm] = None
 
-        self._cookies, self._headers = load_secret()
+        self.session = session
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def _progress_hook(self, d: dict):
@@ -108,17 +131,7 @@ class YTDLDownloader:
             opts.update(
                 {
                     "external_downloader": "aria2c",
-                    "external_downloader_args": [
-                        "-x",
-                        "16",  # max connections per server
-                        "-s",
-                        "16",  # split into N segments
-                        "-j",
-                        "16",  # parallel downloads
-                        "-k",
-                        "1M",  # segment size
-                        "--summary-interval=0",
-                    ],
+                    "external_downloader_args": self.aria2_args,
                 }
             )
 
@@ -132,11 +145,9 @@ class YTDLDownloader:
         save_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Make streaming request
-            response = requests.get(
+            # Make streaming request using session
+            response = self.session.get(
                 url,
-                headers=self._headers,
-                cookies=self._cookies,
                 stream=True,
                 timeout=30,
                 allow_redirects=True,
@@ -187,11 +198,9 @@ class YTDLDownloader:
             "input": json.dumps({"0": {"json": {"materialId": reading_material_id}}}),
         }
 
-        response = requests.get(
-            "https://learn.deeplearning.ai/api/trpc/course.getReadingMaterial",
+        response = self.session.get(
+            f"{self.api_base_url}/course.getReadingMaterial",
             params=params,
-            cookies=self._cookies,
-            headers=self._headers,
         )
         response.raise_for_status()
 
@@ -206,11 +215,9 @@ class YTDLDownloader:
             "input": json.dumps({"0": {"json": {"videoId": video_id}}}),
         }
 
-        response = requests.get(
-            "https://learn.deeplearning.ai/api/trpc/course.getLessonVideo",
+        response = self.session.get(
+            f"{self.api_base_url}/course.getLessonVideo",
             params=params,
-            cookies=self._cookies,
-            headers=self._headers,
         )
 
         if not response.ok:

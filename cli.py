@@ -10,8 +10,10 @@ import sys
 import time
 from pathlib import Path
 
+import requests
 from tqdm import tqdm
 
+from auth import SUPPORTED_BROWSERS, create_session
 from course import Course
 from user import User
 
@@ -21,30 +23,30 @@ def prepare_args():
         description="Download courses from DeepLearning.AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-    Examples:
-    # Download a single course using full URL
-    python main.py "https://learn.deeplearning.ai/courses/my-course-slug"
+Examples:
+  # Download a single course using full URL
+  dl-ai "https://learn.deeplearning.ai/courses/my-course-slug"
 
-    # Download a single course using just the slug
-    python main.py my-course-slug
+  # Download a single course using just the slug
+  dl-ai my-course-slug
 
-    # Download enrolled courses (studying only)
-    python main.py --enrolled studying
+  # Download enrolled courses (studying only)
+  dl-ai --enrolled studying
 
-    # Download enrolled courses (finished only)
-    python main.py --enrolled finished
+  # Download enrolled courses (finished only)
+  dl-ai --enrolled finished
 
-    # Download all enrolled courses (studying + finished)
-    python main.py --enrolled all
+  # Download all enrolled courses (studying + finished)
+  dl-ai --enrolled all
 
-    # Specify output directory
-    python main.py my-course-slug --output-dir ./my-courses
+  # Specify output directory
+  dl-ai my-course-slug --output-dir ./my-courses
 
-    # Download with concurrent downloads (faster)
-    python main.py my-course-slug --concurrent 3
+  # Download with concurrent downloads (faster)
+  dl-ai my-course-slug --concurrent 3
 
-    # Combine options
-    python main.py --enrolled all -o ./downloads -c 2
+  # Combine options
+  dl-ai --enrolled all -o ./downloads -c 2
         """,
     )
 
@@ -90,6 +92,17 @@ def prepare_args():
         ),
     )
 
+    parser.add_argument(
+        "-b",
+        "--browser",
+        type=str,
+        choices=SUPPORTED_BROWSERS,
+        default="chrome",
+        help=(
+            f"Browser to extract cookies from (default: chrome). Supported browsers: {', '.join(SUPPORTED_BROWSERS)}"
+        ),
+    )
+
     args = parser.parse_args()
 
     # Validate arguments
@@ -105,9 +118,9 @@ def prepare_args():
     return args
 
 
-def download_enrolled_courses(args: argparse.Namespace, output_dir: Path):
+def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, session: requests.Session):
     # Download enrolled courses
-    user = User()
+    user = User(session)
     courses_data = []
 
     if args.enrolled == "studying":
@@ -143,7 +156,7 @@ def download_enrolled_courses(args: argparse.Namespace, output_dir: Path):
 
         try:
             # Build course from raw data
-            course = Course.build_from_raw_data(course_data)
+            course = Course.build_from_raw_data(course_data, session)
             tqdm.write(f"  Lessons: {course.lesson_count}")
 
             # Determine save directory
@@ -164,13 +177,13 @@ def download_enrolled_courses(args: argparse.Namespace, output_dir: Path):
     tqdm.write(f"✅ All {len(courses_data)} course(s) processed!")
 
 
-def download_single_course(args: argparse.Namespace, output_dir: Path):
+def download_single_course(args: argparse.Namespace, output_dir: Path, session: requests.Session):
     # Download single course
     course_url_or_slug = args.course.strip()
 
     # Build course from URL or slug
     tqdm.write(f"Loading course: {course_url_or_slug}")
-    course = Course.build_from_url(course_url_or_slug)
+    course = Course.build_from_url(course_url_or_slug, session=session)
     tqdm.write(f"Found course: {course.name}")
     tqdm.write(f"  Slug: {course.slug}")
     tqdm.write(f"  Lessons: {course.lesson_count}")
@@ -188,14 +201,23 @@ def main():
 
     args = prepare_args()
 
+    # Initialize authentication using browser cookies
+    try:
+        tqdm.write(f"Extracting cookies from {args.browser}...")
+        session = create_session(browser=args.browser)
+        tqdm.write(f"✅ Successfully authenticated using {args.browser} cookies\n")
+    except Exception as e:
+        tqdm.write(f"❌ Authentication failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
     # Convert output directory to Path
     output_dir = Path(args.output_dir).expanduser().resolve()
 
     try:
         if args.enrolled:
-            download_enrolled_courses(args, output_dir)
+            download_enrolled_courses(args, output_dir, session)
         else:
-            download_single_course(args, output_dir)
+            download_single_course(args, output_dir, session)
 
     except KeyboardInterrupt:
         tqdm.write("\n\nDownload interrupted by user.")

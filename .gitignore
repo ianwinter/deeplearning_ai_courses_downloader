@@ -16,3 +16,10 @@ __pycache__/
 .env.test.local
 .env.production.local
 ideas/
+
+# Python package build artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg

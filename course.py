@@ -10,10 +10,8 @@ from tqdm import tqdm
 
 from downloader import YTDLDownloader
 from models import CourseData, CoursePartner
-from utils import load_secret
 
 COURSES_BASE_URL = "https://learn.deeplearning.ai/courses/"
-PLATFORM_API = "https://platform-api.dlai.link"
 
 # Thread-safe lock for progress bar updates
 _pbar_lock = Lock()
@@ -34,26 +32,29 @@ class Course:
         course.download(save_dir=Path("./courses"))
     """
 
-    def __init__(self, course_data: Dict[str, Any]):
+    def __init__(self, course_data: Dict[str, Any], session: requests.Session):
         """
         Initialize Course from a dictionary.
 
         Args:
             course_data: Dictionary containing 'lessons' and 'course_info' keys.
+            session: Configured requests.Session instance with cookies and headers
 
         Raises:
             ValidationError: If course_data doesn't match the expected schema.
         """
         # Validate and parse the course data using Pydantic
         self._data = CourseData(**course_data)
+        self.session = session
 
     @classmethod
-    def build_from_url(cls, course_url_or_slug: str) -> "Course":
+    def build_from_url(cls, course_url_or_slug: str, session: requests.Session) -> "Course":
         """
         Build a Course instance by fetching data from a course URL or slug.
 
         Args:
             course_url_or_slug: Either a full course URL or just the slug.
+            session: Configured requests.Session instance with cookies and headers
 
         Returns:
             Course instance with fetched data.
@@ -63,11 +64,11 @@ class Course:
             requests.RequestException: If the API request fails.
         """
         course_slug = cls._extract_course_slug(course_url_or_slug)
-        raw_data = cls._fetch_raw_data(course_slug)
-        return cls.build_from_raw_data(raw_data)
+        raw_data = cls._fetch_raw_data(course_slug, session)
+        return cls.build_from_raw_data(raw_data, session)
 
     @classmethod
-    def build_from_raw_data(cls, raw_data: Dict[str, Any]) -> "Course":
+    def build_from_raw_data(cls, raw_data: Dict[str, Any], session: requests.Session) -> "Course":
         """
         Build a Course instance from raw API response data.
 
@@ -92,7 +93,7 @@ class Course:
             },
         }
 
-        return cls(final_data)
+        return cls(final_data, session)
 
     @staticmethod
     def _extract_course_slug(course_id: str) -> str:
@@ -107,20 +108,25 @@ class Course:
         return course_slug
 
     @staticmethod
-    def _fetch_raw_data(course_slug: str) -> Dict[str, Any]:
-        """Fetch course data from the API."""
+    def _fetch_raw_data(course_slug: str, session: requests.Session) -> Dict[str, Any]:
+        """
+        Fetch course data from the API.
+
+        Args:
+            course_slug: Course slug identifier
+            session: Configured requests.Session instance with cookies and headers
+
+        Returns:
+            Dictionary containing course data
+        """
         params = {
             "batch": "1",
             "input": json.dumps({"0": {"json": {"courseSlug": course_slug}}}),
         }
 
-        cookies, headers = load_secret()
-
-        response = requests.get(
+        response = session.get(
             "https://learn.deeplearning.ai/api/trpc/course.getCourseBySlug",
             params=params,
-            cookies=cookies,
-            headers=headers,
         )
         response.raise_for_status()
 
@@ -165,7 +171,8 @@ class Course:
         if concurrent_downloads == 1:
             # Sequential download (original behavior)
             for index, (lesson_id, lesson_data) in enumerate(sorted_lessons, start=1):
-                success = YTDLDownloader(lesson_data, save_dir, position=1).download_lesson_content(lesson_data)
+                downloader = YTDLDownloader(lesson_data, save_dir, self.session, position=1)
+                success = downloader.download_lesson_content(lesson_data)
                 if not success:
                     tqdm.write(f"Error downloading lesson {index} ({lesson_data.name})")
                 else:
@@ -179,7 +186,7 @@ class Course:
                     # Assign position = 1 + idx modulo max_workers to keep bars stable
                     # This limits active bars to max_workers rows while maintaining stable positions
                     slot = 1 + (idx % concurrent_downloads)
-                    downloader = YTDLDownloader(lesson_data, save_dir, position=slot)
+                    downloader = YTDLDownloader(lesson_data, save_dir, self.session, position=slot)
                     future = executor.submit(downloader.download_lesson_content, lesson_data)
                     future_to_lesson[future] = lesson_data
 

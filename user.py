@@ -2,12 +2,16 @@ import json
 
 import requests
 
-from utils import load_secret
-
 
 class User:
-    def __init__(self):
-        self.cookies, self.headers = load_secret()
+    def __init__(self, session: requests.Session):
+        """
+        Initialize User with a requests session.
+
+        Args:
+            session: Configured requests.Session instance with cookies and headers
+        """
+        self.session = session
         self.BASE = "https://learn.deeplearning.ai"
         self.TRPC_ENDPOINT = f"{self.BASE}/api/trpc/course.enrolledCurriculumsV2"
 
@@ -35,7 +39,7 @@ class User:
             "input": json.dumps({"0": {"json": {"filter": filter}}}),
         }
 
-        response = requests.get(self.TRPC_ENDPOINT, params=params, headers=self.headers, cookies=self.cookies)
+        response = self.session.get(self.TRPC_ENDPOINT, params=params)
 
         if not response.ok:
             raise Exception(f"Failed to list studying courses: {response.status_code}")
