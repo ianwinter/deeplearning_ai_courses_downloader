@@ -10,8 +10,7 @@ from tqdm import tqdm
 
 from downloader import YTDLDownloader
 from models import CourseData, CoursePartner
-
-COURSES_BASE_URL = "https://learn.deeplearning.ai/courses/"
+from urls import DeepLearningAIURLs
 
 # Thread-safe lock for progress bar updates
 _pbar_lock = Lock()
@@ -102,8 +101,8 @@ class Course:
             raise ValueError("Course id is required")
 
         course_slug = course_id.strip()
-        if course_slug.startswith(COURSES_BASE_URL):
-            course_slug = course_slug[len(COURSES_BASE_URL) :].split("/")[0]
+        if course_slug.startswith(DeepLearningAIURLs.COURSES_BASE):
+            course_slug = course_slug[len(DeepLearningAIURLs.COURSES_BASE) + 1 :].split("/")[0]
 
         return course_slug
 
@@ -125,7 +124,7 @@ class Course:
         }
 
         response = session.get(
-            "https://learn.deeplearning.ai/api/trpc/course.getCourseBySlug",
+            DeepLearningAIURLs.GET_COURSE_BY_SLUG,
             params=params,
         )
         response.raise_for_status()
@@ -226,7 +225,7 @@ class Course:
         md_lines.append("## Course Information\n\n")
 
         if course_info.slug:
-            course_url = f"{COURSES_BASE_URL}{course_info.slug}"
+            course_url = f"{DeepLearningAIURLs.COURSES_BASE}/{course_info.slug}"
             md_lines.append(f"- **Course Link**: [{course_info.name}]({course_url})\n")
 
         md_lines.append(f"- **Course ID**: `{course_info.courseId}`\n")
@@ -275,7 +274,12 @@ class Course:
                     time_str = f"{seconds}s"
 
             # Build lesson link
-            lesson_url = f"{COURSES_BASE_URL}{course_info.slug}/lesson/{lesson_slug}/{lesson_name.replace(' ', '-')}"
+            lesson_url = "{base}/{slug}/lesson/{lesson_slug}/{lesson_name}".format(
+                base=DeepLearningAIURLs.COURSES_BASE,
+                slug=course_info.slug,
+                lesson_slug=lesson_slug,
+                lesson_name=lesson_name.replace(" ", "-"),
+            )
 
             # Lesson type emoji/icon
             type_icon = {

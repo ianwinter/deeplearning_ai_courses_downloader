@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dl-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Download courses from DeepLearning.AI"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -37,10 +37,10 @@ dependencies = [
 dl-ai = "cli:main"
 
 [tool.setuptools]
-py-modules = ["cli", "course", "downloader", "models", "user", "auth"]
+py-modules = ["cli", "course", "downloader", "models", "user", "auth", "urls"]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/dl-ai"
-Repository = "https://github.com/yourusername/dl-ai"
-Issues = "https://github.com/yourusername/dl-ai/issues"
+Homepage = "https://github.com/karimelgazar/deeplearning_ai_courses_downloader"
+Repository = "https://github.com/karimelgazar/deeplearning_ai_courses_downloader"
+Issues = "https://github.com/karimelgazar/deeplearning_ai_courses_downloader/issues"
 

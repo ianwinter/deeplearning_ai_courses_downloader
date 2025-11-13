@@ -8,7 +8,7 @@ A Python CLI tool to download courses from DeepLearning.AI, including videos, ca
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/karimelgazar/deeplearning_ai_courses_downloader
 cd deeplearning_ai_courses_downloader
 
 # Install in development mode

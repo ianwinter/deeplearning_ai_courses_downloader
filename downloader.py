@@ -9,6 +9,7 @@ from tqdm import tqdm
 from yt_dlp.utils import json
 
 from models import Lesson
+from urls import DeepLearningAIURLs
 
 
 class YTDLDownloader:
@@ -20,7 +21,7 @@ class YTDLDownloader:
         position: int = 1,  # terminal row for this bar (0 reserved for outer)
         use_aria2: bool = False,
         aria2_args: Optional[Sequence[str]] = None,
-        api_base_url: str = "https://learn.deeplearning.ai/api/trpc",
+        api_base_url: str = DeepLearningAIURLs.API_BASE_URL,
     ):
         """
         Initialize YTDLDownloader.

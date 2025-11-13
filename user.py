@@ -2,6 +2,8 @@ import json
 
 import requests
 
+from urls import DeepLearningAIURLs
+
 
 class User:
     def __init__(self, session: requests.Session):
@@ -12,8 +14,7 @@ class User:
             session: Configured requests.Session instance with cookies and headers
         """
         self.session = session
-        self.BASE = "https://learn.deeplearning.ai"
-        self.TRPC_ENDPOINT = f"{self.BASE}/api/trpc/course.enrolledCurriculumsV2"
+        self.enrolled_curriculums_v2_endpoint = DeepLearningAIURLs.ENROLLED_CURRICULUMS_V2
 
     def _list_enrolled_courses(self, filter: str = "studying") -> list[dict]:
         """
@@ -39,7 +40,7 @@ class User:
             "input": json.dumps({"0": {"json": {"filter": filter}}}),
         }
 
-        response = self.session.get(self.TRPC_ENDPOINT, params=params)
+        response = self.session.get(self.enrolled_curriculums_v2_endpoint, params=params)
 
         if not response.ok:
             raise Exception(f"Failed to list studying courses: {response.status_code}")
