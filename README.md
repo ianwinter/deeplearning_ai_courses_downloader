@@ -11,17 +11,11 @@ A Python CLI tool to download courses from DeepLearning.AI, including videos, ca
 git clone https://github.com/karimelgazar/deeplearning_ai_courses_downloader
 cd deeplearning_ai_courses_downloader
 
-# Install in development mode
-pip install -e .
-
 # Or install normally
 pip install .
-```
 
-### Direct Install (if published)
-
-```bash
-pip install dl-ai
+# Make sure it's installed
+dl-ai -h
 ```
 
 ## Configuration
