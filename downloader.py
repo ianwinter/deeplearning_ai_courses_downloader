@@ -64,43 +64,31 @@ class YTDLDownloader:
             downloaded = d.get("downloaded_bytes", 0)
 
             if self._pbar is None:
-                # create bar for this file
                 filename = d.get("filename") or f"{self.file_stem}.mp4"
                 short_name = Path(filename).stem[:60]
-                # position param keeps separate bars on different rows
                 self._pbar = tqdm(
                     total=total,
                     unit="B",
                     unit_scale=True,
-                    unit_divisor=1000,  # show MB/s not MiB/s
+                    unit_divisor=1000,
                     desc=short_name,
                     leave=False,
-                    # Specify the line offset to print this bar (starting from 0) Automatic if unspecified.
-                    # Useful to manage multiple bars at once (eg, from threads).
-                    # If you have a single bar, you can omit position and it will default to 0.
                     position=self.position,
                     dynamic_ncols=True,
                 )
 
-            # update bar
             if total:
                 self._pbar.total = total
             self._pbar.n = downloaded
-
-            # refresh the bar
             self._pbar.refresh()
 
         elif status == "finished":
-            # merging finished
             if self._pbar is not None:
-                # mark complete
                 if self._pbar.total and self._pbar.n < self._pbar.total:
                     self._pbar.n = self._pbar.total
-                # close and remove bar line
                 self._pbar.close()
                 self._pbar = None
 
-            # use tqdm.write to print the message instead of print() to avoid mixing with the progress bar
             tqdm.write(f"✅ Downloaded: '{Path(d.get('filename', self.file_stem)).name}'")
         elif status == "error":
             if self._pbar is not None:
@@ -115,16 +103,15 @@ class YTDLDownloader:
         opts = {
             "outtmpl": str(output_file_path.resolve()),
             "quiet": True,
-            "noprogress": True,  # don't show yt-dlp built-in progress bar
-            "merge_output_format": "mp4",  # merge segments into a single file
+            "noprogress": True,
+            "merge_output_format": "mp4",
             "progress_hooks": [self._progress_hook],
-            "no_warnings": True,  # don't show yt-dlp warnings
-            "logtostderr": False,  # don't show yt-dlp logs to stderr
+            "no_warnings": True,
+            "logtostderr": False,
             "ratelimit": None,
             "throttledratelimit": None,
             "retries": 10,
             "fragment_retries": 10,
-            # allow yt-dlp to use its internal concurrent fragment downloader as fallback
             "concurrent_fragment_downloads": 4,
         }
 
@@ -141,12 +128,9 @@ class YTDLDownloader:
     def _save_file(self, url: str, save_file_path: Path, show_progress: bool = True, is_binary: bool = True) -> None:
         """Download a file from a URL with optional progress bar."""
         mode = "wb" if is_binary else "w"
-
-        # Ensure parent directory exists
         save_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Make streaming request using session
             response = self.session.get(
                 url,
                 stream=True,
@@ -155,11 +139,9 @@ class YTDLDownloader:
             )
             response.raise_for_status()
 
-            # Get file size from headers if available
             total_size = int(response.headers.get("content-length", 0)) or None
 
             if show_progress:
-                # Download with progress bar (disappears when done with leave=False)
                 with (
                     open(save_file_path, mode) as f,
                     tqdm(
@@ -168,7 +150,7 @@ class YTDLDownloader:
                         unit="B",
                         unit_scale=True,
                         unit_divisor=1024,
-                        leave=False,  # Progress bar disappears when done
+                        leave=False,
                     ) as pbar,
                 ):
                     for chunk in response.iter_content(chunk_size=8192):
@@ -176,13 +158,11 @@ class YTDLDownloader:
                             f.write(chunk)
                             pbar.update(len(chunk))
             else:
-                # Download without progress bar, just log line
                 with open(save_file_path, mode) as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
 
-                # use tqdm.write to print the message instead of print() to avoid mixing with the progress bar
                 tqdm.write(f"✅ Downloaded: '{save_file_path.name}'")
 
         except requests.exceptions.RequestException as e:
@@ -224,11 +204,36 @@ class YTDLDownloader:
         if not response.ok:
             return {}
 
-        data = response.json()[0]["result"]["data"]["json"]["video"]
-        caption_url = data["tracks"][0]["src"]
-        video_url = data["mp4Url"] if data["mp4Url"] else data["webmUrl"]
+        try:
+            res_data = response.json()
+            if not res_data or not isinstance(res_data, list):
+                return {}
 
-        return {"caption_url": caption_url, "video_url": video_url}
+            json_payload = res_data[0].get("result", {}).get("data", {}).get("json", {})
+            video_data = json_payload.get("video")
+
+            if not video_data:
+                tqdm.write(f"⚠️ No video data found for video ID {video_id}")
+                return {}
+
+            caption_url = None
+            tracks = video_data.get("tracks", [])
+            if tracks and len(tracks) > 0:
+                caption_url = tracks[0].get("src")
+
+            video_url = video_data.get("mp4Url") or video_data.get("webmUrl")
+
+            result = {}
+            if caption_url:
+                result["caption_url"] = caption_url
+            if video_url:
+                result["video_url"] = video_url
+
+            return result
+
+        except (KeyError, TypeError, IndexError) as e:
+            tqdm.write(f"⚠️ Failed to parse video response for ID {video_id}: {e}")
+            return {}
 
     def download_video_from_m3u8(self, m3u8_url: str) -> None:
         """Download a video from a m3u8 URL and save it to the output directory."""
@@ -239,8 +244,6 @@ class YTDLDownloader:
     def download_lesson_content(self, lesson_data: Lesson) -> bool:
         """
         Download a single lesson (reading material or video).
-
-        This method is designed to be called concurrently.
 
         Args:
             lesson_data: The lesson data object
@@ -256,15 +259,13 @@ class YTDLDownloader:
             elif lesson_type in ("video", "video_notebook") and lesson_data.videoId:
                 lesson_video_data = self._extract_video_and_caption_urls(lesson_data.videoId)
                 if lesson_video_data.get("caption_url"):
-                    # Download caption first (smaller, faster)
                     self._save_file(
                         lesson_video_data["caption_url"],
                         self.out_dir / f"{self.file_stem}.vtt",
                         is_binary=True,
-                        show_progress=False,  # Hide individual file progress in concurrent mode
+                        show_progress=False,
                     )
                 if lesson_video_data.get("video_url"):
-                    # Then download video (larger, slower)
                     self.download_video_from_m3u8(lesson_video_data["video_url"])
 
             return True

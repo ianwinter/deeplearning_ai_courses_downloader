@@ -1,7 +1,7 @@
 """
 DeepLearning.AI Course Downloader
 
-This module provides functionality to download courses from DeepLearning.AI.
+This module provides functionality to download courses and specializations from DeepLearning.AI.
 Use the Course class for the main functionality.
 """
 
@@ -18,9 +18,9 @@ from course import Course
 from user import User
 
 
-def prepare_args():
+def prepare_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download courses from DeepLearning.AI",
+        description="Download courses and specializations from DeepLearning.AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -29,6 +29,9 @@ Examples:
 
   # Download a single course using just the slug
   dl-ai my-course-slug
+
+  # Download a full specialization bundle
+  dl-ai -s generative-ai-for-software-development
 
   # Download enrolled courses (studying only)
   dl-ai --enrolled studying
@@ -57,8 +60,16 @@ Examples:
         help=(
             "Course URL or slug (e.g., 'my-course-slug' or "
             "'https://learn.deeplearning.ai/courses/my-course-slug'). "
-            "Required if --enrolled is not used."
+            "Required if --enrolled or --specialization is not used."
         ),
+    )
+
+    parser.add_argument(
+        "-s",
+        "--specialization",
+        type=str,
+        metavar="SLUG",
+        help="Specialization URL or slug. Downloads all sub-courses within the specialization bundle.",
     )
 
     parser.add_argument(
@@ -105,21 +116,19 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate arguments
-    if not args.course and not args.enrolled:
-        parser.error("Either 'course' argument or '--enrolled' option must be provided")
+    # Validate arguments: ensure exactly one target mode is specified
+    targets = [bool(args.course), bool(args.enrolled), bool(args.specialization)]
 
-    if args.course and args.enrolled:
-        parser.error("Cannot specify both 'course' argument and '--enrolled' option")
-
-    if args.concurrent < 1:
-        parser.error("--concurrent must be at least 1")
+    if sum(targets) == 0:
+        parser.error("Must specify 'course' argument, '--enrolled', or '--specialization'")
+    elif sum(targets) > 1:
+        parser.error("Cannot combine 'course', '--enrolled', and '--specialization' options")
 
     return args
 
 
-def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, session: requests.Session):
-    # Download enrolled courses
+def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, session: requests.Session) -> None:
+    """Download user's enrolled courses based on filter criteria."""
     user = User(session)
     courses_data = []
 
@@ -142,7 +151,6 @@ def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, sessio
 
     tqdm.write(f"Found {len(courses_data)} {status_name} course(s)\n")
 
-    # Download each course
     for idx, course_data in enumerate(courses_data, 1):
         course_slug = course_data.get("slug")
         course_name = course_data.get("name", "Unknown")
@@ -155,21 +163,16 @@ def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, sessio
         tqdm.write(f"  Slug: {course_slug}")
 
         try:
-            # Build course from raw data
             course = Course.build_from_raw_data(course_data, session)
             tqdm.write(f"  Lessons: {course.lesson_count}")
 
-            # Determine save directory
             save_dir = output_dir / course.slug
-
-            # Download the course
             tqdm.write(f"  Saving to: {save_dir}\n")
             course.download(save_dir, concurrent_downloads=args.concurrent)
 
         except Exception as e:
             tqdm.write(f"  ✗ Error downloading {course_name}: {e}\n")
 
-        # Sleep 1 minute between courses (except after the last one)
         if idx < len(courses_data):
             tqdm.write("  Waiting 60 seconds before next course...\n")
             time.sleep(60)
@@ -177,31 +180,67 @@ def download_enrolled_courses(args: argparse.Namespace, output_dir: Path, sessio
     tqdm.write(f"✅ All {len(courses_data)} course(s) processed!")
 
 
-def download_single_course(args: argparse.Namespace, output_dir: Path, session: requests.Session):
-    # Download single course
+def download_single_course(args: argparse.Namespace, output_dir: Path, session: requests.Session) -> None:
+    """Download a single standalone course."""
     course_url_or_slug = args.course.strip()
 
-    # Build course from URL or slug
     tqdm.write(f"Loading course: {course_url_or_slug}")
     course = Course.build_from_url(course_url_or_slug, session=session)
     tqdm.write(f"Found course: {course.name}")
     tqdm.write(f"  Slug: {course.slug}")
     tqdm.write(f"  Lessons: {course.lesson_count}")
 
-    # Determine save directory
     save_dir = output_dir / course.slug
-
-    # Download the course
     tqdm.write(f"\nSaving to: {save_dir}")
     course.download(save_dir, concurrent_downloads=args.concurrent)
 
 
-def main():
-    """Main entry point for the CLI script."""
+def download_specialization(args: argparse.Namespace, output_dir: Path, session: requests.Session) -> None:
+    """Download all sub-courses within a specialization bundle."""
+    spec_slug = Course._extract_course_slug(args.specialization.strip())
 
+    tqdm.write(f"Fetching specialization info for: {spec_slug}...")
+
+    try:
+        sub_slugs = Course.fetch_specialization_course_slugs(spec_slug, session)
+    except Exception as e:
+        tqdm.write(f"❌ Failed to fetch specialization '{spec_slug}': {e}", file=sys.stderr)
+        return
+
+    if not sub_slugs:
+        tqdm.write(f"❌ No courses found for specialization '{spec_slug}'")
+        return
+
+    tqdm.write(f"Found Specialization '{spec_slug}' containing {len(sub_slugs)} sub-course(s):\n")
+
+    spec_dir = output_dir / spec_slug
+
+    for idx, sub_slug in enumerate(sub_slugs, 1):
+        tqdm.write(f"[{idx}/{len(sub_slugs)}] Processing course: {sub_slug}")
+        try:
+            course = Course.build_from_url(sub_slug, session=session)
+            tqdm.write(f"  Name: {course.name}")
+            tqdm.write(f"  Lessons: {course.lesson_count}")
+
+            save_dir = spec_dir / course.slug
+            tqdm.write(f"  Saving to: {save_dir}\n")
+
+            course.download(save_dir, concurrent_downloads=args.concurrent)
+
+        except Exception as e:
+            tqdm.write(f"  ✗ Error downloading sub-course '{sub_slug}': {e}\n")
+
+        if idx < len(sub_slugs):
+            tqdm.write("  Waiting 5 seconds before next course...\n")
+            time.sleep(5)
+
+    tqdm.write(f"✅ Finished processing specialization '{spec_slug}'!")
+
+
+def main() -> None:
+    """Main entry point for the CLI script."""
     args = prepare_args()
 
-    # Initialize authentication using browser cookies
     try:
         tqdm.write(f"Extracting cookies from {args.browser}...")
         session = create_session(browser=args.browser)
@@ -210,12 +249,13 @@ def main():
         tqdm.write(f"❌ Authentication failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Convert output directory to Path
     output_dir = Path(args.output_dir).expanduser().resolve()
 
     try:
         if args.enrolled:
             download_enrolled_courses(args, output_dir, session)
+        elif args.specialization:
+            download_specialization(args, output_dir, session)
         else:
             download_single_course(args, output_dir, session)
 

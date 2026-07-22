@@ -20,6 +20,7 @@ class DeepLearningAIURLs(str, Enum):
     GET_COURSE_BY_SLUG = API_BASE_URL + "/course.getCourseBySlug"
     GET_READING_MATERIAL = API_BASE_URL + "/course.getReadingMaterial"
     GET_LESSON_VIDEO = API_BASE_URL + "/course.getLessonVideo"
+    GET_SPECIALIZATION = API_BASE_URL + "/course.getSpecialization"
 
     def __str__(self) -> str:
         """Return the URL value as a string."""
