@@ -23,15 +23,31 @@ dl-ai -h
 ```bash
 # Install uv if it is not already installed
 command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
+#### From the repo
+
+```bash
+# Install directly from GitHub using uv tool
+uv tool install git+https://github.com/karimelgazar/deeplearning_ai_courses_downloader.git
+```
+
+#### From source
+
+```bash
 # Clone the repository
 git clone https://github.com/karimelgazar/deeplearning_ai_courses_downloader
 cd deeplearning_ai_courses_downloader
 
-# Install as an editable tool using uv
+# Install as an editable tool using uv (this means you can make changes)
 uv tool install --editable .
+```
 
-# Make sure it's installed
+### Testing
+
+In all cases, make sure it's installed
+
+```bash
 dl-ai -h
 ```
 
